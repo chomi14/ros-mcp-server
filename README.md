@@ -1,457 +1,344 @@
-
-# `ros-mcp-server/README.md`
-
-````markdown
 # ros-mcp-server
 
-## Overview
-`ros-mcp-server` is an MCP-based interface server for a ROS 2 machining / polishing pipeline.  
-This repository provides a natural-language interaction layer between Gemini CLI and the local robot-control / data-processing environment.
+ROS 2 환경에서 rosbridge를 통해 토픽, 서비스, 메시지 구조를 조회하고,  
+추가적으로 폴리싱 데이터의 필터링 / 분석 / 경로 재생성 / 경로 실행까지 수행할 수 있는 MCP 서버입니다.
 
-Its main roles are:
-- natural-language command interpretation
-- MCP-compatible server execution
-- optional microphone/STT-based command input
-- optional camera/image input handling
-- communication with the ROS-side execution workspace
-
-This repository does **not** by itself perform the full ROS-side machining workflow.  
-Actual trajectory execution, raw data collection, filtering, and analysis are handled in the companion ROS 2 workspace repository.
+이 프로젝트는 현재 **Ubuntu + ROS 2 + rosbridge + 별도 ROS workspace(`~/ros2_ws`)** 환경을 기준으로 구성되어 있습니다.  
+따라서 다른 환경에서 실행할 경우, 아래의 디렉토리 구조와 ROS 패키지 구성을 맞추는 것이 중요합니다.
 
 ---
 
-## Repository Structure
+## Features
 
-```text
-ros-mcp-server/
-├── .github/                # GitHub workflows
-├── camera/                 # image input / received images
-├── prompts/                # prompt templates
-├── stt/                    # speech-to-text related scripts
-├── utils/                  # helper utilities
-├── server.py               # main MCP server entry point
-├── pyproject.toml          # Python project configuration
-├── uv.lock                 # dependency lock file
-├── GEMINI.md               # Gemini-related notes / environment guidance
-└── README.md
+- rosbridge를 통한 ROS 2 topic / service introspection
+- topic subscribe / publish
+- service call
+- 네트워크 진단 (`ping_robot`, `connect_to_robot`)
+- raw polishing log filtering
+- polishing analysis
+- regeneration path 생성
+- txt 기반 polishing path 실행 및 자동 로깅
+
+---
+
+## Recommended Environment
+
+- Ubuntu 22.04
+- ROS 2 Humble
+- Python 3.10+
+- `rosbridge_server`
+- `colcon` build 가능한 ROS 2 workspace
+
+---
+
+## Assumptions in the Current Version
+
+현재 버전은 다음 환경을 전제로 작성되어 있습니다.
+
+- rosbridge WebSocket 기본 주소: `127.0.0.1:9090`
+- ROS workspace 경로: `~/ros2_ws`
+- 데이터 경로: `~/ros2_ws/data/ep`
+- 가공 실행 패키지: `ur_custom_ik`
+- 실행 노드: `txt_ik_executor_force_patched`
+
+즉, 실행 환경에서도 가능하면 동일한 경로 구조를 유지하는 것을 권장합니다.
+
+---
+
+## Recommended Directory Layout
+
+```bash
+~/ros-mcp-server
+~/ros2_ws
+├── src
+│   └── ... (ROS 2 packages, including ur_custom_ik)
+├── install
+├── build
+├── log
+└── data
+    └── ep
+        ├── xyz.txt
+        ├── vxyz.txt
+        ├── fxyz.txt
+        ├── rpy.txt
+        ├── real_flat_filtered.txt
+        ├── auto_logger.py
+        ├── filter_logs_txt.py
+        ├── polish_pipeline.py
+        └── ...
 ````
 
 ---
 
-## Requirements
-
-* Ubuntu 22.04 recommended
-* Python 3.10+
-* Node.js 20+
-* Git
-* Internet connection for Gemini authentication or API access
-
----
-
-## Installation
+## Setup
 
 ### 1. Clone the repository
 
-```bash
-git clone https://github.com/chomi14/ros-mcp-server.git
-cd ros-mcp-server
+```bash id="xz557q"
+cd ~
+git clone <REPOSITORY_URL> ros-mcp-server
 ```
 
-### 2. Create and activate a Python virtual environment
+### 2. Prepare the ROS 2 workspace
 
-```bash
-python3 -m venv venv_ros_mcp
-source venv_ros_mcp/bin/activate
-pip install --upgrade pip
+```bash id="xcf1s5"
+cd ~
+mkdir -p ros2_ws/src
 ```
 
-### 3. Install project dependencies
+필요한 ROS 2 패키지들(예: `ur_custom_ik`)을 `~/ros2_ws/src` 아래에 배치합니다.
 
-Using `uv`:
+---
 
-```bash
-pip install uv
-uv sync
+### 3. Build the ROS workspace
+
+```bash id="xwlrxq"
+cd ~/ros2_ws
+colcon build
+source install/setup.bash
 ```
 
-If `uv sync` is not preferred, try:
+매 터미널마다 아래 source를 수행하는 것을 권장합니다.
 
-```bash
-pip install -e .
-```
-
-### 4. Install Gemini CLI
-
-```bash
-npm install -g @google/gemini-cli
-```
-
-### 5. Authenticate Gemini CLI
-
-#### Option A: Browser login
-
-```bash
-gemini
-```
-
-#### Option B: API key
-
-```bash
-export GEMINI_API_KEY=YOUR_API_KEY
-gemini
-```
-
-To make the API key persistent:
-
-```bash
-echo 'export GEMINI_API_KEY=YOUR_API_KEY' >> ~/.bashrc
-source ~/.bashrc
+```bash id="p7cwx6"
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
 ```
 
 ---
 
-## Running the Server
+### 4. Install Python dependencies
 
-Activate the Python environment and run the MCP server:
-
-```bash
+```bash id="7gbis9"
 cd ~/ros-mcp-server
-source venv_ros_mcp/bin/activate
-python server.py
+pip install fastmcp pillow
+```
+
+추가적으로 데이터 처리 스크립트에 따라 다음 패키지가 필요할 수 있습니다.
+
+```bash id="9caum5"
+pip install numpy scipy matplotlib pandas
+```
+
+가능하다면 `requirements.txt`를 구성한 뒤 다음 방식으로 설치하는 것을 권장합니다.
+
+```bash id="mcjlwm"
+pip install -r requirements.txt
 ```
 
 ---
 
-## Typical Workflow
+## Running rosbridge
 
-### 1. Start the MCP server
+이 서버는 ROS 2와 직접 연결되지 않고 **rosbridge WebSocket**을 통해 통신합니다.
+따라서 먼저 rosbridge를 실행해야 합니다.
 
-```bash
+```bash id="v10rdq"
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+```
+
+기본 포트는 `9090`입니다.
+
+정상 실행 여부는 다음으로 확인할 수 있습니다.
+
+```bash id="t7g3ft"
+ss -ltnp | grep 9090
+```
+
+---
+
+## Running the MCP Server
+
+기본적으로 `stdio` transport를 사용합니다.
+
+```bash id="ffxsvs"
 cd ~/ros-mcp-server
-source venv_ros_mcp/bin/activate
-python server.py
+python3 server.py
 ```
 
-### 2. Open another terminal and start Gemini CLI
+환경변수로 transport를 바꾸고 싶다면 예를 들어:
 
-```bash
-gemini
+```bash id="m7em8a"
+export MCP_TRANSPORT=streamable-http
+export MCP_HOST=127.0.0.1
+export MCP_PORT=9000
+python3 server.py
 ```
 
-### 3. Enter a natural-language command
+---
 
-Examples:
+## Pre-run Checklist
 
-* `Execute the first machining pass using ~/ros2_ws/data/ep/real_flat.txt`
-* `After machining, run the filtering pipeline using the collected raw data`
-* `Run the analysis pipeline and summarize the results`
+실행 전에 아래 항목을 확인하십시오.
+
+* [ ] `~/ros2_ws`가 존재하는가
+* [ ] `~/ros2_ws/install/setup.bash`가 생성되었는가
+* [ ] `ur_custom_ik` 패키지가 빌드되었는가
+* [ ] `ros2 run ur_custom_ik txt_ik_executor_force_patched`가 가능한가
+* [ ] `~/ros2_ws/data/ep` 아래에 필요한 txt / python 스크립트가 존재하는가
+* [ ] rosbridge가 `127.0.0.1:9090`에서 실행 중인가
+
+---
+
+## Recommended First Tests
+
+가공 실행 전에 아래 순서로 먼저 테스트하는 것을 권장합니다.
+
+1. `connect_to_robot()`
+2. `get_topics()`
+3. `get_services()`
+4. `get_topic_type('/your_topic')`
+5. `subscribe_once(...)`
+
+이 단계에서 실패하면 rosbridge 또는 ROS 환경 문제일 가능성이 큽니다.
+
+---
+
+## Default Paths Used by the Data Pipeline
+
+현재 서버 코드는 다음 경로들을 기본값으로 사용합니다.
+
+### Filtering
+
+* `~/ros2_ws/data/ep/xyz.txt`
+* `~/ros2_ws/data/ep/vxyz.txt`
+* `~/ros2_ws/data/ep/fxyz.txt`
+* `~/ros2_ws/data/ep/rpy.txt`
+
+### Analysis
+
+* `~/ros2_ws/data/ep/vxyz_filtered.txt`
+* `~/ros2_ws/data/ep/fxyz_filtered.txt`
+* 결과 디렉토리: `~/ros2_ws/data/ep/polish_out_filtered`
+
+### Regeneration
+
+* 입력 경로: `~/ros2_ws/data/ep/real_flat_filtered.txt`
+* removal map: `~/ros2_ws/data/ep/polish_out_filtered/removal_map.npz`
+* 출력 경로: `~/ros2_ws/data/ep/real_flat_filtered_new2.txt`
+
+### Path Execution
+
+* logger: `~/ros2_ws/data/ep/auto_logger.py`
+* executor: `ros2 run ur_custom_ik txt_ik_executor_force_patched`
+
+즉, 위 경로들 중 하나라도 없으면 실행이 실패할 수 있습니다.
+
+---
+
+## Common Errors
+
+### 1) `No executable found`
+
+원인:
+
+* `ur_custom_ik`가 빌드되지 않음
+* `source ~/ros2_ws/install/setup.bash`를 안 함
+* 실행 파일 이름이 다름
+
+해결:
+
+```bash id="xj0s6n"
+cd ~/ros2_ws
+colcon build
+source install/setup.bash
+ros2 pkg executables ur_custom_ik
+```
+
+---
+
+### 2) `No such file or directory`
+
+원인:
+
+* `~/ros2_ws/data/ep/...` 경로가 없음
+* txt / python 스크립트가 누락됨
+
+해결:
+
+```bash id="6he3fh"
+ls ~/ros2_ws/data/ep
+```
+
+필요한 파일이 모두 존재하는지 확인하십시오.
+
+---
+
+### 3) topic / service 조회 실패
+
+원인:
+
+* rosbridge 미실행
+* 9090 포트 문제
+* ROS 환경 source 안 됨
+
+해결:
+
+```bash id="i0gbkv"
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+```
+
+---
+
+### 4) filtering / analysis만 실패
+
+원인:
+
+* `filter_logs_txt.py`, `polish_pipeline.py` 누락
+* Python 패키지 미설치
+* 입력 txt 형식 불일치
+
+해결:
+
+* 스크립트 존재 여부 확인
+* `numpy`, `scipy`, `matplotlib`, `pandas` 설치 여부 확인
+* 입력 파일 형식을 직접 점검
 
 ---
 
 ## Notes
 
-* This repository should be used together with the ROS 2 workspace repository.
-* Actual robot-side execution is performed in `ros2_ws`.
-* Before issuing real execution commands, make sure the ROS 2 workspace is built and sourced.
-* If microphone/STT features are used, additional audio-related dependencies may be required depending on the system environment.
+현재 버전은 경로가 비교적 고정된 형태로 구성되어 있으므로,
+가장 안정적인 실행 방법은 아래 항목을 동일하게 유지하는 것입니다.
+
+* 저장소 위치: `~/ros-mcp-server`
+* ROS workspace 위치: `~/ros2_ws`
+* 데이터 위치: `~/ros2_ws/data/ep`
+* rosbridge 포트: `9090`
+
+즉, 코드를 수정하기보다는 환경 구조를 먼저 맞추는 방식이 가장 간단합니다.
 
 ---
 
-## Related Repository
+## Future Improvements
 
-* ROS 2 workspace: [ros2_ws](https://github.com/chomi14/ros2_ws)
+향후 다음과 같은 개선을 권장합니다.
+
+* `~/ros2_ws` 하드코딩 제거
+* 환경변수 기반 workspace path 지정
+* `requirements.txt` 정리
+* 입력 파일 존재 여부 검사 추가
+* 샘플 입력 파일 제공
+* 데이터 형식 문서화
 
 ---
 
-## Troubleshooting
+## Summary
 
-### Gemini CLI is not recognized
+이 프로젝트를 실행하려면 다음 4가지가 핵심입니다.
 
-Check installation:
+1. ROS 2 workspace가 정상적으로 빌드되어 있을 것
+2. rosbridge가 실행 중일 것
+3. `~/ros2_ws/data/ep` 경로와 관련 스크립트/데이터가 존재할 것
+4. `ur_custom_ik` 패키지와 executor가 정상 실행될 것
 
-```bash
-gemini --version
-node -v
-npm -v
+현재 버전은 환경 재현형 구성에 가깝기 때문에,
+동일한 폴더 구조를 유지하는 것이 가장 안정적입니다.
+
+이제 원하면 다음으로  
+**더 짧고 GitHub 느낌 나는 최종 README 버전**으로 한 번 더 압축해줄게.
 ```
-
-### Python package import errors
-
-Make sure the virtual environment is activated:
-
-```bash
-source venv_ros_mcp/bin/activate
-```
-
-Then reinstall dependencies if necessary:
-
-```bash
-pip install uv
-uv sync
-```
-
-### Server starts but commands do not trigger ROS execution
-
-Check the following:
-
-* the ROS 2 workspace is available
-* the ROS environment has been sourced
-* required ROS nodes/services are running
-* file paths are valid
-* the companion workspace is correctly configured
-
-### Microphone/STT does not work
-
-Check:
-
-* microphone connection
-* OS audio settings
-* required audio libraries and permissions
-
----
-
-## Author
-
-Jun
-
-````
-
----
-
-# `ros2_ws/README.md`
-
-```markdown
-# ros2_ws
-
-## Overview
-`ros2_ws` is the ROS 2 workspace for the actual machining / polishing pipeline.  
-This repository contains the ROS-side execution environment for:
-- trajectory/path execution
-- raw data collection
-- filtering / preprocessing of collected data
-- analysis of execution results
-
-This workspace is intended to be used together with the companion repository:
-- `ros-mcp-server`: natural-language / MCP interface layer
-- `ros2_ws`: actual ROS 2 execution and analysis workspace
-
----
-
-## Environment
-- Ubuntu 22.04 recommended
-- ROS 2 Humble
-- Python 3.10+
-- colcon
-
----
-
-## Workspace Structure
-
-```text
-ros2_ws/
-├── src/                    # ROS 2 packages
-├── data/                   # input paths, raw logs, processed data, analysis outputs
-├── build/                  # generated by colcon build (not tracked)
-├── install/                # generated by colcon build (not tracked)
-├── log/                    # generated by colcon build (not tracked)
-└── README.md
-````
-
----
-
-## Build
-
-### 1. Source ROS 2
-
-```bash
-source /opt/ros/humble/setup.bash
-```
-
-### 2. Move to the workspace
-
-```bash
-cd ~/ros2_ws
-```
-
-### 3. Build the workspace
-
-```bash
-colcon build
-```
-
-### 4. Source the built workspace
-
-```bash
-source install/setup.bash
-```
-
----
-
-## Basic Usage
-
-Before running nodes, source the environments:
-
-```bash
-source /opt/ros/humble/setup.bash
-cd ~/ros2_ws
-source install/setup.bash
-```
-
-Then launch the required node(s) depending on the experiment or machining setup.
-
-Example:
-
-```bash
-ros2 launch <your_package> <your_launch_file>.launch.py
-```
-
-Or:
-
-```bash
-ros2 run <package_name> <node_name>
-```
-
----
-
-## Typical Pipeline
-
-A standard workflow is:
-
-1. Prepare an input path / trajectory file
-   Example:
-
-   ```bash
-   ~/ros2_ws/data/ep/real_flat.txt
-   ```
-
-2. Execute the first machining pass
-
-3. Save the collected raw execution data
-
-4. Run the filtering pipeline using the collected raw data
-
-5. Run the analysis pipeline and inspect the summary results
-
----
-
-## Data Flow
-
-### Input
-
-* planned path / trajectory file (`.txt`)
-
-### Intermediate / execution output
-
-* raw execution logs
-* robot or simulation output data
-
-### Processed output
-
-* filtered velocity / force / trajectory data
-* processed logs for evaluation
-
-### Final output
-
-* analysis summaries
-* comparison results
-* metrics / plots / reports
-
----
-
-## Practical Example
-
-### Build and source the workspace
-
-```bash
-source /opt/ros/humble/setup.bash
-cd ~/ros2_ws
-colcon build
-source install/setup.bash
-```
-
-### Example input
-
-```bash
-~/ros2_ws/data/ep/real_flat.txt
-```
-
-### Example command flow
-
-1. Execute a machining pass using the prepared input path
-2. Collect raw data from the run
-3. Run filtering on the collected raw data
-4. Run analysis and inspect the summary output
-
----
-
-## Integration with `ros-mcp-server`
-
-This workspace can be controlled through the `ros-mcp-server` repository, which provides a natural-language interface via Gemini CLI / MCP.
-
-Typical integrated workflow:
-
-1. Build and source this workspace
-2. Start required ROS nodes / services
-3. Start `ros-mcp-server`
-4. Send commands through Gemini CLI
-
----
-
-## Important Notes
-
-* Do **not** commit `build/`, `install/`, or `log/`.
-* Large raw logs, bag files, temporary outputs, and generated results should generally be excluded from version control unless they are intentionally shared samples.
-* Always source both the ROS 2 environment and the workspace setup file before running nodes.
-* File paths used in commands should match the actual workspace structure on the machine.
-
----
-
-## Related Repository
-
-* MCP / Gemini interface: [ros-mcp-server](https://github.com/chomi14/ros-mcp-server)
-
----
-
-## Troubleshooting
-
-### `ros2` command not found
-
-```bash
-source /opt/ros/humble/setup.bash
-```
-
-### Package not found
-
-Rebuild and source again:
-
-```bash
-cd ~/ros2_ws
-colcon build
-source install/setup.bash
-```
-
-### Build fails
-
-Check:
-
-* package dependencies
-* Python environment
-* missing system libraries
-* package names and folder structure inside `src/`
-
-### Execution works but analysis fails
-
-Check:
-
-* input/output file paths
-* whether raw logs were successfully generated
-* whether required Python scripts are available
-* whether dependent packages are properly installed
-
----
-
-## Author
-
-Jun
-
-````
